@@ -15,7 +15,8 @@ public class MemoryQueue {
     private final ReentrantReadWriteLock.ReadLock readLock = lock.readLock();
     private final ReentrantReadWriteLock.WriteLock writeLock = lock.writeLock();
 
-    private volatile long logEndOffset = 0; // 下一条要写入的offset
+    // 无需 volatile，由 writeLock/readLock 保证可见性
+    private long logEndOffset = 0; // 下一条要写入的offset
 
     public MemoryQueue() {
         this.queue = new ArrayDeque<>();
