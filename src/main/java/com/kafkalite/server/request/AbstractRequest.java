@@ -8,6 +8,7 @@ import lombok.Data;
 public abstract class AbstractRequest {
     protected String topic;
     protected int partition;
+    protected long correlationId;
 
     public abstract RequestType getRequestType();
 

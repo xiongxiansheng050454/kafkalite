@@ -8,13 +8,13 @@ import io.netty.channel.*;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.util.ReferenceCountUtil;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Slf4j
 public class NetworkClient {
@@ -23,6 +23,7 @@ public class NetworkClient {
     private Channel channel;
     private final EventLoopGroup group = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
     private final ResponseHandler responseHandler = new ResponseHandler();
+    private final AtomicLong correlationIdGenerator = new AtomicLong(0); // ID生成器
 
     public NetworkClient(String host, int port) {
         this.host = host;
@@ -48,11 +49,16 @@ public class NetworkClient {
     }
 
     public CompletableFuture<AbstractResponse> send(AbstractRequest request) {
+        // 分配唯一ID
+        long correlationId = correlationIdGenerator.getAndIncrement();
+        request.setCorrelationId(correlationId);
+
         CompletableFuture<AbstractResponse> future = new CompletableFuture<>();
-        responseHandler.registerPending(channel.id(), future);
+        responseHandler.registerPending(correlationId, future);
 
         channel.writeAndFlush(request).addListener((ChannelFutureListener) f -> {
             if (!f.isSuccess()) {
+                responseHandler.removePending(correlationId); // 发送失败时清理
                 future.completeExceptionally(f.cause());
             }
         });
@@ -62,29 +68,51 @@ public class NetworkClient {
 
     public void close() {
         if (channel != null) {
-            // 关闭前确保所有消息都已发送并释放
-            channel.flush();
             channel.close();
         }
         group.shutdownGracefully();
     }
 
-    // 简单的响应处理器，实际需要根据 correlationId 匹配，这里简化
     @Slf4j
     static class ResponseHandler extends SimpleChannelInboundHandler<AbstractResponse> {
-        // 简化版：直接通过 channel id 映射，生产环境需用 correlationId
-        private final Map<ChannelId, CompletableFuture<AbstractResponse>> pending = new ConcurrentHashMap<>();
+        // 使用 correlationId 映射
+        private final Map<Long, CompletableFuture<AbstractResponse>> pending = new ConcurrentHashMap<>();
 
-        public void registerPending(ChannelId id, CompletableFuture<AbstractResponse> future) {
-            pending.put(id, future);
+        public void registerPending(long correlationId, CompletableFuture<AbstractResponse> future) {
+            pending.put(correlationId, future);
+        }
+
+        public void removePending(long correlationId) {
+            pending.remove(correlationId);
         }
 
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, AbstractResponse response) {
-            CompletableFuture<AbstractResponse> future = pending.remove(ctx.channel().id());
+            long correlationId = response.getCorrelationId();
+            CompletableFuture<AbstractResponse> future = pending.remove(correlationId);
+
             if (future != null) {
                 future.complete(response);
+            } else {
+                log.warn("Received response for unknown correlationId: {}", correlationId);
             }
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            log.error("Network error", cause);
+            ctx.close();
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) {
+            log.warn("Channel inactive, failing all pending requests");
+            pending.forEach((id, future) -> {
+                if (!future.isDone()) {
+                    future.completeExceptionally(new RuntimeException("Connection closed"));
+                }
+            });
+            pending.clear();
         }
     }
 }

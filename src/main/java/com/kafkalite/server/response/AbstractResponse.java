@@ -11,6 +11,7 @@ public abstract class AbstractResponse {
     public static final short OFFSET_OUT_OF_RANGE = 2;
 
     protected short errorCode = SUCCESS;
+    protected long correlationId;
 
     // 新增：返回响应类型，用于编码时写入类型字节
     public abstract ResponseType getResponseType();

@@ -46,6 +46,8 @@ public class BrokerHandler extends SimpleChannelInboundHandler<AbstractRequest> 
             response.setErrorCode((short) 99); // 内部错误
         }
 
+        // 回传请求中的 correlationId
+        response.setCorrelationId(request.getCorrelationId());
         ctx.writeAndFlush(response);
     }
 
@@ -99,14 +101,24 @@ public class BrokerHandler extends SimpleChannelInboundHandler<AbstractRequest> 
     private MetadataResponse handleMetadata(MetadataRequest req) {
         MetadataResponse resp = new MetadataResponse();
 
-        if (req.getTopic() == null || req.getTopic().isEmpty()) {
+        String topicName= req.getTopic();
+
+        if (topicName == null || topicName.isEmpty()) {
             // 返回所有 topic
             topics.forEach((name, topic) ->
                     resp.getTopicMetadata().put(name, topic.getNumPartitions()));
         } else {
-            Topic topic = topics.get(req.getTopic());
+            Topic topic = topics.get(topicName);
             if (topic != null) {
                 resp.getTopicMetadata().put(topic.getName(), topic.getNumPartitions());
+            } else {
+                // **自动创建 Topic**（单机版便利功能，生产环境需配置化）
+                log.info("Auto-creating topic '{}' with {} partitions", topicName, DEFAULT_PARTITIONS);
+
+                Topic newTopic = new Topic(topicName, DEFAULT_PARTITIONS);
+                topics.put(topicName, newTopic);
+
+                resp.getTopicMetadata().put(topicName, DEFAULT_PARTITIONS);
             }
         }
         return resp;
