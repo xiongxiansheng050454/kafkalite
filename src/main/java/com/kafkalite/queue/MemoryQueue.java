@@ -6,6 +6,7 @@ import com.kafkalite.model.MessageSet;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -28,11 +29,15 @@ public class MemoryQueue {
     public void append(MessageSet messageSet) {
         writeLock.lock();
         try {
-            ByteBuffer buffer = messageSet.toByteBuffer();
-            // 为每个消息分配offset（简化版，实际应在MessageSet级别分配）
-            for (int i = 0; i < messageSet.size(); i++) {
+            // 为消息集中的每条消息分配正确的 partition offset
+            List<Message> messages = messageSet.getMessages();
+            for (Message msg : messages) {
+                // 创建新消息，使用正确的 partition offset
+                Message correctedMsg = new Message(msg.getKey(), msg.getValue(), logEndOffset);
                 logEndOffset++;
             }
+
+            ByteBuffer buffer = messageSet.toByteBuffer();
             queue.addLast(buffer);
         } finally {
             writeLock.unlock();
@@ -49,12 +54,24 @@ public class MemoryQueue {
         try {
             List<Message> result = new ArrayList<>();
             int bytesRead = 0;
+            long currentOffset = startOffset;
 
-            for (ByteBuffer buffer : queue) {
-                if (bytesRead + buffer.remaining() > maxBytes) break;
+            // 跳过 startOffset 之前的消息（简化实现：假设每条消息占一个slot）
+            Iterator<ByteBuffer> it = queue.iterator();
+            for (long i = 0; i < startOffset && it.hasNext(); i++) {
+                it.next();
+            }
 
-                ByteBuffer duplicate = buffer.duplicate(); // 避免修改原buffer
-                result.addAll(MessageSet.fromByteBuffer(duplicate));
+            // 从 startOffset 开始读取
+            while (it.hasNext() && bytesRead < maxBytes) {
+                ByteBuffer buffer = it.next();
+                ByteBuffer duplicate = buffer.duplicate();
+
+                // 反序列化并设置正确的 offset
+                List<Message> messages = MessageSet.fromByteBuffer(duplicate, currentOffset);
+                result.addAll(messages);
+
+                currentOffset += messages.size();
                 bytesRead += buffer.remaining();
             }
             return result;
